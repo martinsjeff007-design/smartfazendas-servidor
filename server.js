@@ -216,6 +216,17 @@ app.get("/", (req, res) => {
   res.json({ status: "SmartFazendas online", versao: "1.0.0" });
 });
 
+// Webhook Meta - verificação
+app.get("/webhook/meta", (req, res) => {
+  const mode = req.query["hub.mode"];
+  const token = req.query["hub.verify_token"];
+  const challenge = req.query["hub.challenge"];
+  if (mode === "subscribe" && token === "smartfazendas2026") {
+    res.status(200).send(challenge);
+  } else {
+    res.sendStatus(403);
+  }
+});
 app.listen(CONFIG.PORTA, () => {
   console.log(`SmartFazendas rodando na porta ${CONFIG.PORTA}`);
 });
