@@ -14,8 +14,9 @@ app.use((req, res, next) => {
 
 const CONFIG = {
   CLAUDE_API_KEY: process.env.CLAUDE_API_KEY || "sua-chave-aqui",
-  EVOLUTION_URL: process.env.EVOLUTION_URL || "https://evolution-api-production-0af4.up.railway.app",
-  EVOLUTION_API_KEY: process.env.EVOLUTION_API_KEY || "sua-chave-evolution",
+  META_TOKEN: process.env.META_TOKEN || "",
+  META_PHONE_ID: process.env.META_PHONE_ID || "",
+  META_VERIFY_TOKEN: process.env.META_VERIFY_TOKEN || "smartfazendas2026",
   PORTA: process.env.PORT || 3000,
 };
 
@@ -63,17 +64,26 @@ function salvarPropriedades(dados) {
 }
 
 let PROPRIEDADES = carregarPropriedades();
-
 const historico = {};
 
-async function enviarMensagem(instancia, numeroDestino, texto) {
-  console.log("Enviando mensagem para:", numeroDestino);
+async function enviarMensagemMeta(numeroDestino, texto) {
+  console.log("Enviando via Meta API para:", numeroDestino);
   const resp = await axios.post(
-    `${CONFIG.EVOLUTION_URL}/message/sendText/${instancia}`,
-    { number: numeroDestino, text: texto },
-    { headers: { apikey: CONFIG.EVOLUTION_API_KEY, "Content-Type": "application/json" } }
+    `https://graph.facebook.com/v18.0/${CONFIG.META_PHONE_ID}/messages`,
+    {
+      messaging_product: "whatsapp",
+      to: numeroDestino,
+      type: "text",
+      text: { body: texto },
+    },
+    {
+      headers: {
+        Authorization: `Bearer ${CONFIG.META_TOKEN}`,
+        "Content-Type": "application/json",
+      },
+    }
   );
-  console.log("Mensagem enviada! Status:", resp.status);
+  console.log("Mensagem enviada via Meta! Status:", resp.status);
 }
 
 async function chamarAgente(mensagens, propriedade, nomeCorretor) {
@@ -117,42 +127,47 @@ REGRAS:
   return response.data.content[0].text;
 }
 
-app.post("/webhook/:instancia", async (req, res) => {
+// Webhook Meta - verificação
+app.get("/webhook/meta", (req, res) => {
+  const mode = req.query["hub.mode"];
+  const token = req.query["hub.verify_token"];
+  const challenge = req.query["hub.challenge"];
+  if (mode === "subscribe" && token === CONFIG.META_VERIFY_TOKEN) {
+    res.status(200).send(challenge);
+  } else {
+    res.sendStatus(403);
+  }
+});
+
+// Webhook Meta - receber mensagens
+app.post("/webhook/meta", async (req, res) => {
   res.sendStatus(200);
-  console.log("Webhook recebido:", req.params.instancia);
-
   try {
-    const { instancia } = req.params;
-    const evento = req.body;
-    console.log("Evento:", evento.event);
+    const body = req.body;
+    if (body.object !== "whatsapp_business_account") return;
+    const entry = body.entry?.[0];
+    const changes = entry?.changes?.[0];
+    const value = changes?.value;
+    const messages = value?.messages;
+    if (!messages || messages.length === 0) return;
 
-    if (evento.event !== "messages.upsert") return;
+    const msg = messages[0];
+    if (msg.type !== "text") return;
 
-    const msg = evento.data;
-    if (!msg || msg.key?.fromMe) return;
-
-    let numeroCliente = msg.key?.remoteJid?.replace("@s.whatsapp.net", "").replace("@lid", "");
-    const textoRecebido = msg.message?.conversation || msg.message?.extendedTextMessage?.text || "";
+    const numeroCliente = msg.from;
+    const textoRecebido = msg.text?.body || "";
 
     console.log("Mensagem de:", numeroCliente, "->", textoRecebido);
-    if (!textoRecebido || !numeroCliente) return;
 
-    const corretorConfig = Object.values(PROPRIEDADES).find(c => c.instancia === instancia);
-    if (!corretorConfig) {
-      console.log("Corretor não encontrado para instancia:", instancia);
-      return;
-    }
-    console.log("Corretor encontrado:", corretorConfig.corretor);
+    const corretorConfig = Object.values(PROPRIEDADES)[0];
+    if (!corretorConfig) return;
 
-    const chave = `${instancia}:${numeroCliente}`;
+    const chave = `meta:${numeroCliente}`;
     if (!historico[chave]) historico[chave] = [];
 
     let propriedade = historico[chave].propriedade;
     if (!propriedade) {
-      const nomeMencionado = corretorConfig.propriedades.find(p =>
-        p.ativa && textoRecebido.toLowerCase().includes(p.nome.toLowerCase().split(" ").slice(-1)[0].toLowerCase())
-      );
-      propriedade = nomeMencionado || corretorConfig.propriedades.find(p => p.ativa) || corretorConfig.propriedades[0];
+      propriedade = corretorConfig.propriedades.find(p => p.ativa) || corretorConfig.propriedades[0];
       historico[chave].propriedade = propriedade;
     }
 
@@ -162,11 +177,11 @@ app.post("/webhook/:instancia", async (req, res) => {
     const resposta = await chamarAgente(mensagensParaAPI, propriedade, corretorConfig.corretor);
     historico[chave].push({ role: "assistant", content: resposta });
 
-    await enviarMensagem(instancia, numeroCliente, resposta);
+    await enviarMensagemMeta(numeroCliente, resposta);
     console.log("Resposta enviada:", resposta.substring(0, 100));
 
   } catch (err) {
-    console.error("Erro no webhook:", err.message);
+    console.error("Erro no webhook Meta:", err.message);
     if (err.response) {
       console.error("Detalhes:", err.response.status, JSON.stringify(err.response.data));
     }
@@ -184,27 +199,6 @@ app.post("/chat", async (req, res) => {
   }
 });
 
-app.post("/propriedades/:instancia", (req, res) => {
-  try {
-    const { instancia } = req.params;
-    const { corretor, propriedades } = req.body;
-
-    const config = Object.values(PROPRIEDADES).find(c => c.instancia === instancia);
-    if (!config) {
-      return res.status(404).json({ erro: "Instância não encontrada" });
-    }
-
-    config.corretor = corretor;
-    config.propriedades = propriedades;
-    salvarPropriedades(PROPRIEDADES);
-
-    console.log(`Propriedades salvas para ${instancia}:`, propriedades.map(p => p.nome));
-    res.json({ ok: true, total: propriedades.length });
-  } catch (err) {
-    res.status(500).json({ erro: err.message });
-  }
-});
-
 app.get("/propriedades/:instancia", (req, res) => {
   const { instancia } = req.params;
   const config = Object.values(PROPRIEDADES).find(c => c.instancia === instancia);
@@ -213,20 +207,9 @@ app.get("/propriedades/:instancia", (req, res) => {
 });
 
 app.get("/", (req, res) => {
-  res.json({ status: "SmartFazendas online", versao: "1.0.0" });
+  res.json({ status: "SmartFazendas online", versao: "2.0.0" });
 });
 
-// Webhook Meta - verificação
-app.get("/webhook/meta", (req, res) => {
-  const mode = req.query["hub.mode"];
-  const token = req.query["hub.verify_token"];
-  const challenge = req.query["hub.challenge"];
-  if (mode === "subscribe" && token === "smartfazendas2026") {
-    res.status(200).send(challenge);
-  } else {
-    res.sendStatus(403);
-  }
-});
 app.listen(CONFIG.PORTA, () => {
   console.log(`SmartFazendas rodando na porta ${CONFIG.PORTA}`);
 });
