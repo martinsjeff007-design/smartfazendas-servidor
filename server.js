@@ -11,6 +11,7 @@ const CONFIG = {
   META_TOKEN:        process.env.META_TOKEN,
   META_PHONE_ID:     process.env.META_PHONE_ID,
   META_VERIFY_TOKEN: process.env.META_VERIFY_TOKEN || "smartfazendas2026",
+  META_WABA_ID:      process.env.META_WABA_ID      || "1343670474335810",
 };
 
 // Versão da Graph API da Meta (estável em 2026)
@@ -152,6 +153,29 @@ async function enviarWhatsApp(para, texto) {
     console.error("🔥 Erro de rede ao enviar WhatsApp:", erro.message);
   }
 }
+
+// ------------------------------------------------------------
+//  Rota de configuração (rodar UMA vez): inscreve o app na
+//  conta do WhatsApp para as mensagens chegarem no webhook.
+//  Abrir no navegador: .../assinar-waba
+// ------------------------------------------------------------
+app.get("/assinar-waba", async (req, res) => {
+  try {
+    const resp = await fetch(
+      `https://graph.facebook.com/${GRAPH_VERSION}/${CONFIG.META_WABA_ID}/subscribed_apps`,
+      {
+        method: "POST",
+        headers: { "Authorization": `Bearer ${CONFIG.META_TOKEN}` },
+      }
+    );
+    const dados = await resp.json();
+    console.log("Resultado assinar-waba:", JSON.stringify(dados));
+    res.json(dados);
+  } catch (erro) {
+    console.error("Erro ao assinar WABA:", erro.message);
+    res.status(500).json({ erro: erro.message });
+  }
+});
 
 // ------------------------------------------------------------
 //  Rota de saúde (abrir no navegador para ver se está no ar)
